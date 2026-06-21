@@ -1,170 +1,323 @@
 # Telegram Android MTProxy DPI-Fix
 
-Patch for the open-source Telegram Android client that makes MTProxy `ee-secret` fake-TLS traffic less static and harder to match by simple DPI signatures.
+Патч для open-source клиента **Telegram Android** из репозитория **DrKLO/Telegram**.
 
-The patch is focused on **external MTProxy connections only**. Normal Telegram authorization and direct Telegram DC connections are intentionally left untouched.
+Патч делает fake-TLS handshake у MTProxy с `ee-secret` менее статичным, чтобы простые DPI-сигнатуры хуже узнавали трафик Telegram MTProxy.
 
-## What this patch does
+> Важно: патч рассчитан именно на исходники **DrKLO/Telegram**.  
+> Не рекомендуется применять его напрямую к Telegram-FOSS, Nekogram, Forkgram, MDGram и другим форкам без ручной проверки diff.
 
-This patch modifies the native Telegram Android network layer:
+---
+
+## Что делает патч
+
+Патч изменяет native-сетевой слой Telegram Android:
 
 ```text
 TMessagesProj/jni/tgnet/ConnectionSocket.cpp
 TMessagesProj/jni/tgnet/ConnectionSocket.h
 ```
 
-Main idea:
+Основная идея:
 
 ```text
-Official/default Telegram MTProxy fake-TLS ClientHello has a recognizable static pattern.
-This patch makes the MTProxy fake-TLS handshake more dynamic.
+Стандартный fake-TLS ClientHello у Telegram MTProxy имеет узнаваемый статичный паттерн.
+Патч делает этот handshake более динамическим.
 ```
 
-Implemented behavior:
+Поведение после патча:
 
 ```text
-Normal authorization without proxy       → original Telegram behavior
-Direct Telegram DC fakeTLS               → original Telegram behavior
-External MTProxy with ee-secret          → DPI-fix ClientHello
+Обычная авторизация без прокси      → оригинальное поведение Telegram
+Direct Telegram DC fakeTLS          → оригинальное поведение Telegram
+Внешний MTProxy с ee-secret         → DPI-fix ClientHello
 ```
 
-The patch adds:
+То есть патч **не должен ломать обычную авторизацию**, потому что DPI-fix включается только для внешнего MTProxy с `ee-secret`.
+
+---
+
+## Требования
+
+Нужны:
 
 ```text
-- dynamic fake-TLS ClientHello generation for MTProxy
-- randomized GREASE / random fields
-- dynamic final padding
-- fixed valid ClientHello size
-- chunked ClientHello sending
-- EAGAIN / EWOULDBLOCK / EINTR handling
+- исходники Telegram Android из DrKLO/Telegram
+- Android Studio
+- Android SDK / NDK
+- JDK из Android Studio
+- свои Telegram api_id / api_hash
 ```
 
-The patch does **not** add:
+Патч тестировался на структуре проекта Telegram Android, где есть:
 
 ```text
-- VPN functionality
-- proxy server functionality
-- malware/self-propagation code
-- credential collection
-- Telegram protocol changes
+TMessagesProj/
+TMessagesProj_App/
+gradle/
 ```
 
-## Current status
+---
 
-Tested behavior:
+## Важно: используйте исходники DrKLO
+
+Сначала скачайте официальный Android-код Telegram:
 
 ```text
-Clean self-built Telegram Android auth works with custom api_id/api_hash.
-Patched build keeps normal authorization working.
-Patch works with at least some external MTProxy ee-secret links.
+https://github.com/DrKLO/Telegram
 ```
 
-Known limitation:
+Пример:
+
+```bash
+git clone https://github.com/DrKLO/Telegram.git
+cd Telegram
+```
+
+Не применяйте патч вслепую к другим форкам. У них может отличаться:
 
 ```text
-Not every MTProxy is guaranteed to work.
-Some providers may block by IP, DNS, SNI, hosting ASN, or other traffic properties.
+- ConnectionSocket.cpp
+- ConnectionSocket.h
+- MtProto/TGNet логика
+- структура Gradle-проекта
+- сборочные flavor'ы
+- native CMake/NDK конфигурация
 ```
 
-In testing, links where `server` is an IP address were more reliable than links where `server` is a hostname.
+Если используете не DrKLO-код, сначала сравните файлы вручную.
 
-Recommended MTProxy format:
+---
 
-```text
-tg://proxy?server=<IP>&port=<PORT>&secret=ee...
-```
+## Обязательно: свой api_id и api_hash
 
-Less reliable format:
-
-```text
-tg://proxy?server=<hostname>&port=<PORT>&secret=ee...
-```
-
-## Important: use your own Telegram API credentials
-
-The official Telegram Android source contains public sample credentials:
+В исходниках Telegram Android по умолчанию могут быть публичные тестовые API-данные:
 
 ```java
 APP_ID = 4
 APP_HASH = "014b35b6184100b085b0d0572f9b5103"
 ```
 
-Do **not** use them for real builds. Authorization may fail or hang.
+Их нельзя использовать для нормальной сборки. С ними авторизация может зависать, не присылать код или падать на серверной стороне.
 
-You need to get your own Telegram API credentials from:
+Получите свои данные здесь:
 
 ```text
 my.telegram.org → API development tools
 ```
 
-Then edit:
+Затем откройте файл:
 
 ```text
 TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
 ```
 
-Example:
+И замените:
 
 ```java
 public static int APP_ID = YOUR_API_ID;
 public static String APP_HASH = "YOUR_API_HASH";
 ```
 
-Do not commit your private `APP_HASH` into a public repository.
+Пример:
 
-## Applying the patch
-
-From the root of Telegram Android source:
-
-```bash
-git apply telegram_android_proxy_only_dynamic_padding_v3.patch
+```java
+public static int APP_ID = 12345678;
+public static String APP_HASH = "abcdef1234567890abcdef1234567890";
 ```
 
-If the source tree changed and the patch does not apply cleanly:
+Не выкладывайте свой `APP_HASH` в публичный GitHub.
 
-```bash
-git apply --reject telegram_android_proxy_only_dynamic_padding_v3.patch
+---
+
+## Что именно меняется
+
+Патч добавляет:
+
+```text
+- отдельный DPI-fix ClientHello для внешнего MTProxy
+- динамическую генерацию handshake
+- GREASE/random-поля
+- динамический final padding
+- корректный размер fake-TLS ClientHello
+- chunked sending первого ClientHello
+- обработку EAGAIN / EWOULDBLOCK / EINTR
 ```
 
-Then resolve `.rej` files manually.
+Патч не добавляет:
 
-## Verifying that the patch is applied
+```text
+- VPN
+- свой прокси-сервер
+- изменение Telegram-протокола
+- сбор логинов/паролей
+- скрытые фоновые функции
+- автозапуск
+- вредоносную логику
+```
 
-Run:
+---
+
+## Поддерживаемый тип прокси
+
+Патч включается только для внешнего MTProxy с secret, начинающимся на:
+
+```text
+ee
+```
+
+Пример ссылки:
+
+```text
+tg://proxy?server=144.31.169.255&port=853&secret=ee2676ac90d85a6e00bcb106d9d635243169642e766b2e7275
+```
+
+Где:
+
+```text
+server=144.31.169.255
+port=853
+secret=ee...
+```
+
+`ee-secret` содержит fake-TLS домен внутри самого secret.
+
+Например:
+
+```text
+ee2676ac90d85a6e00bcb106d9d635243169642e766b2e7275
+```
+
+Содержит домен:
+
+```text
+id.vk.ru
+```
+
+---
+
+## Как расшифровать домен из ee-secret
+
+Можно использовать простой Python-скрипт:
+
+```python
+secret = "ee2676ac90d85a6e00bcb106d9d635243169642e766b2e7275"
+
+if secret.startswith("ee") and len(secret) > 34:
+    domain_hex = secret[34:]
+    domain = bytes.fromhex(domain_hex).decode("utf-8", errors="replace")
+    print(domain)
+else:
+    print("Это не ee-secret")
+```
+
+Вывод:
+
+```text
+id.vk.ru
+```
+
+---
+
+## Рекомендации по MTProxy
+
+Лучше работает формат, где `server` — это IP:
+
+```text
+tg://proxy?server=<IP>&port=<PORT>&secret=ee...
+```
+
+Менее надёжный вариант:
+
+```text
+tg://proxy?server=<hostname>&port=<PORT>&secret=ee...
+```
+
+Если ссылка с hostname не работает, попробуйте узнать IP:
+
+```bash
+nslookup vpn.example.com
+```
+
+И собрать ссылку вручную:
+
+```text
+tg://proxy?server=<resolved_ip>&port=<port>&secret=<same_secret>
+```
+
+Пример:
+
+```text
+Было:
+tg://proxy?server=vpn.example.com&port=8443&secret=ee...
+
+Стало:
+tg://proxy?server=1.2.3.4&port=8443&secret=ee...
+```
+
+---
+
+## Применение патча
+
+Из корня проекта Telegram Android:
+
+```bash
+git apply patches/telegram_android_proxy_only_dynamic_padding_v3.patch
+```
+
+Если патч не применился чисто:
+
+```bash
+git apply --reject patches/telegram_android_proxy_only_dynamic_padding_v3.patch
+```
+
+После этого вручную проверьте `.rej` файлы.
+
+---
+
+## Проверка, что патч применился
+
+В Linux/macOS/Git Bash:
 
 ```bash
 grep -n "DpiFinalPadding\|dpi_final_padding\|getDpiFixDefault\|useDpiFixTlsHello\|eagainRetries" \
   TMessagesProj/jni/tgnet/ConnectionSocket.cpp
 ```
 
-You should see patch markers.
+Должны появиться строки с этими маркерами.
 
-Make sure old experimental/broken code is not present:
+Проверьте, что в коде нет старых экспериментальных вариантов:
 
 ```bash
 grep -n "NID_ED25519\|EVP_PKEY\|TCP_WINDOW_CLAMP\|random_device\|mt19937\|send_dpi_fix\|TcpSplit\|tlsHelloSplit" \
   TMessagesProj/jni/tgnet/ConnectionSocket.cpp
 ```
 
-Expected result: no output.
+Ожидаемый результат:
 
-## Building on Windows with Android Studio JBR
+```text
+пусто
+```
 
-Open Android Studio Terminal in the project root.
+---
 
-Set Java path:
+## Сборка на Windows через Android Studio Terminal
+
+Откройте Terminal в Android Studio в корне проекта.
+
+Задайте путь к Java из Android Studio:
 
 ```powershell
 $java = "$env:ProgramFiles\Android\Android Studio\jbr\bin\java.exe"
 ```
 
-Build:
+Обычная сборка:
 
 ```powershell
 & $java -classpath ".\gradle\wrapper\gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain :TMessagesProj_App:assembleAfatRelease --stacktrace
 ```
 
-Full clean rebuild:
+Полная пересборка:
 
 ```powershell
 & $java -classpath ".\gradle\wrapper\gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain --stop
@@ -176,222 +329,236 @@ Remove-Item .\TMessagesProj_App\build -Recurse -Force -ErrorAction SilentlyConti
 & $java -classpath ".\gradle\wrapper\gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain :TMessagesProj_App:assembleAfatRelease --rerun-tasks --stacktrace
 ```
 
-Output APK:
+APK будет здесь:
 
 ```text
 TMessagesProj_App/build/outputs/apk/afat/release/app.apk
 ```
 
-## Installing with ADB
+---
 
-Install fresh:
+## Установка через ADB
+
+Свежая установка:
 
 ```bash
 adb install TMessagesProj_App/build/outputs/apk/afat/release/app.apk
 ```
 
-Reinstall over existing app while keeping data:
+Установка поверх старой версии с сохранением данных:
 
 ```bash
 adb install -r TMessagesProj_App/build/outputs/apk/afat/release/app.apk
 ```
 
-For testing patches, `install -r` is faster because it keeps the Telegram session.
-
-## Testing procedure
-
-Recommended test order:
-
-```text
-1. Build clean Telegram Android with your own api_id/api_hash.
-2. Install it.
-3. Confirm that authorization works without proxy.
-4. Apply the DPI-fix patch.
-5. Rebuild.
-6. Confirm that authorization still works without proxy.
-7. Add external MTProxy with ee-secret.
-8. Test proxy connection.
-```
-
-Do not debug MTProxy before confirming normal authorization works.
-
-## MTProxy ee-secret notes
-
-This patch only activates for external MTProxy secrets starting with:
-
-```text
-ee
-```
-
-Example structure:
-
-```text
-secret=ee<16-byte-secret><hex-encoded-fake-tls-domain>
-```
-
-You can decode the fake TLS domain from a secret with:
-
-```python
-secret = "ee..."
-if secret.startswith("ee") and len(secret) > 34:
-    domain_hex = secret[34:]
-    print(bytes.fromhex(domain_hex).decode("utf-8", errors="replace"))
-else:
-    print("Not an ee-secret")
-```
-
-Example:
-
-```text
-ee2676ac90d85a6e00bcb106d9d635243169642e766b2e7275
-```
-
-Decoded fake TLS domain:
-
-```text
-id.vk.ru
-```
-
-## Proxy compatibility tips
-
-More reliable:
-
-```text
-server=<proxy IP>
-secret=ee...
-fake TLS domain inside secret
-```
-
-Less reliable:
-
-```text
-server=<proxy hostname>
-secret=ee...
-```
-
-If a hostname-based proxy does not work, resolve it to IP and try the same secret with the IP:
+Для тестирования патчей удобнее использовать:
 
 ```bash
-nslookup example.proxy.host
+adb install -r
 ```
 
-Then create a link manually:
+Так Telegram-сессия сохраняется.
 
-```text
-tg://proxy?server=<resolved_ip>&port=<port>&secret=<same_secret>
-```
+---
 
-## Troubleshooting
+## Проверка установленного APK
 
-### Authorization does not work
-
-Most likely cause:
-
-```text
-You are still using APP_ID = 4 and the public APP_HASH.
-```
-
-Fix:
-
-```text
-Use your own api_id/api_hash from my.telegram.org.
-```
-
-### Authorization works, but proxy does not
-
-Check:
-
-```text
-- Is the secret really starting with ee?
-- Is this an external MTProxy, not direct Telegram DC fakeTLS?
-- Does the server IP/port respond?
-- Does the same proxy work on another client/network?
-- Is the fake TLS SNI blocked by your provider?
-- Does replacing server hostname with IP help?
-```
-
-### Patch does not seem to change anything
-
-Verify the APK really changed:
+Можно сравнить SHA256 локального APK:
 
 ```powershell
 Get-FileHash .\TMessagesProj_App\build\outputs\apk\afat\release\app.apk -Algorithm SHA256
 ```
 
-After installing to emulator/device, pull the installed APK and compare hashes:
+И установленного APK:
 
 ```bash
 adb shell pm path org.telegram.messenger
 adb pull /path/from/pm/path installed.apk
 ```
 
-Then compare SHA256.
+Затем сравнить хеши.
 
-### Logcat
+---
 
-Clear logs:
+## Рекомендуемый порядок тестирования
+
+Правильный порядок:
+
+```text
+1. Скачать чистый DrKLO/Telegram.
+2. Вписать свой api_id/api_hash.
+3. Собрать чистый APK без патча.
+4. Проверить обычную авторизацию без прокси.
+5. Применить DPI-fix patch.
+6. Собрать APK снова.
+7. Проверить, что обычная авторизация всё ещё работает.
+8. Добавить внешний MTProxy с ee-secret.
+9. Проверить подключение через прокси.
+```
+
+Не имеет смысла тестировать DPI-fix, пока обычная авторизация не работает.
+
+---
+
+## Troubleshooting
+
+### Авторизация не работает
+
+Самая частая причина:
+
+```text
+Вы используете APP_ID = 4 и публичный APP_HASH из исходников.
+```
+
+Решение:
+
+```text
+Получите свои api_id/api_hash на my.telegram.org.
+```
+
+---
+
+### Авторизация работает, но прокси нет
+
+Проверьте:
+
+```text
+- secret точно начинается с ee?
+- это внешний MTProxy, а не direct Telegram DC fakeTLS?
+- server указан IP или hostname?
+- порт открыт?
+- этот же прокси работает в другом клиенте?
+- fake-TLS домен внутри secret не заблокирован?
+- помогает ли замена hostname на IP?
+```
+
+---
+
+### Один прокси работает, другой нет
+
+Это нормально.
+
+DPI может блокировать не только handshake, но и:
+
+```text
+- IP адрес прокси
+- DNS-запрос
+- домен в server=
+- fake-TLS SNI
+- ASN/хостинг
+- порт
+- активное probing-поведение
+```
+
+Например:
+
+```text
+server=IP + SNI=id.vk.ru → может работать
+server=hostname + SNI=www.cloudflare.com → может не работать
+```
+
+---
+
+### Патч не включается
+
+Патч включается только в ветке:
+
+```text
+external MTProxy + ee-secret
+```
+
+Direct fakeTLS DC специально оставлен без DPI-fix.
+
+Логика такая:
+
+```text
+useDpiFixTlsHello = false              // по умолчанию
+external MTProxy ee-secret             // включаем
+direct Telegram DC fakeTLS             // не включаем
+```
+
+Это нужно, чтобы не сломать обычную авторизацию Telegram.
+
+---
+
+## Logcat
+
+Очистить логи:
 
 ```bash
 adb logcat -c
 ```
 
-Run Telegram, try connecting to proxy, then dump logs:
+Запустить Telegram, попробовать подключиться к MTProxy, затем сохранить лог:
 
 ```bash
 adb logcat -d > tg_dpifix_log.txt
 ```
 
-Useful filters:
+Полезные фильтры:
 
 ```bash
 adb logcat | grep -i "tgnet\|proxy\|socket\|mtproto\|connection"
 ```
 
-## Design notes
+---
 
-The patch intentionally avoids changing normal Telegram authorization flow.
+## Архитектура патча
 
-The key flag is reset by default:
-
-```text
-useDpiFixTlsHello = false
-```
-
-It becomes enabled only for external MTProxy with `ee-secret`:
+Главный принцип:
 
 ```text
-external MTProxy ee-secret → useDpiFixTlsHello = true
+Не трогать обычный Telegram network flow.
 ```
 
-Direct Telegram DC fakeTLS remains disabled:
+Патч не заменяет весь `ConnectionSocket`.
+
+Он добавляет отдельную ветку для внешнего MTProxy:
 
 ```text
-direct fakeTLS DC → useDpiFixTlsHello = false
+if external MTProxy has ee-secret:
+    use DPI-fix ClientHello
+else:
+    use original Telegram ClientHello / original behavior
 ```
 
-This separation is important. Without it, a DPI-fix experiment can accidentally break normal authorization.
-
-## What this patch is not
-
-This is not a universal censorship bypass.
-
-DPI systems may also block by:
+Это снижает риск поломать:
 
 ```text
-- proxy IP reputation
-- DNS query
-- SNI/domain policy
-- hosting provider ASN
-- TLS timing
-- packet size distribution
-- active probing
+- логин
+- отправку кода
+- direct DC соединения
+- внутренний fakeTLS Telegram
+- обычную работу без прокси
 ```
 
-This patch only targets one class of detection: static or recognizable MTProxy fake-TLS handshake patterns.
+---
 
-## Repository recommendation
+## Ограничения
 
-Suggested repo layout:
+Это не универсальный способ обхода любых блокировок.
+
+Патч нацелен на один класс DPI-детекта:
+
+```text
+статичный или узнаваемый fake-TLS handshake MTProxy
+```
+
+Он не гарантирует работу, если блокировка идёт по:
+
+```text
+- IP
+- DNS
+- SNI policy
+- ASN провайдера
+- активному probing
+- спискам известных прокси
+- блокировке конкретного порта
+```
+
+---
+
+## Рекомендуемая структура репозитория
 
 ```text
 telegram-android-mtproxy-dpifix/
@@ -402,10 +569,19 @@ telegram-android-mtproxy-dpifix/
     └── troubleshooting.md
 ```
 
-Do not upload your personal `BuildVars.java` with private `APP_HASH`.
+Не выкладывайте в репозиторий:
+
+```text
+- свой APP_HASH
+- приватные MTProxy secret'ы
+- личные сборочные ключи
+- google-services.json с приватными данными
+```
+
+---
 
 ## Disclaimer
 
-This patch is provided for research, interoperability, and user-controlled connectivity through legitimate MTProxy servers.
+Патч предназначен для исследования совместимости, пользовательского подключения к легитимным MTProxy-серверам и экспериментов с open-source клиентом Telegram Android.
 
-Use responsibly and comply with local laws and upstream project licenses.
+Используйте ответственно и соблюдайте законы вашей страны, лицензии Telegram Android и правила GitHub.
